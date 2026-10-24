@@ -1,5 +1,7 @@
 .git
 node_modules
+src/.git
+src/node_modules
 .env
 .env.*
 *.log

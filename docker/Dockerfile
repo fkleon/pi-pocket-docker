@@ -15,11 +15,11 @@ RUN apt-get update \
 ENV NODE_ENV=production
 
 WORKDIR /app
-COPY package.json package-lock.json /app
+COPY src/package.json src/package-lock.json /app
 RUN npm ci --omit=dev
 
-#COPY . /app
-COPY --parents bin/ docs/ src/ types/ web/ .
+#COPY src/ /app
+COPY --parents src/./bin/ src/./docs/ src/./src/ src/./types/ src/./web/ .
 
 EXPOSE 8787
 WORKDIR /workspace
