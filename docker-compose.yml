@@ -13,6 +13,22 @@ x-hardened: &hardened # Read-only root filesystem
   pids_limit: 256
   restart: unless-stopped
 
+# Shared proxy environment for internal services with custom environment values.
+x-internal-environment: &internal-environment
+  HTTP_PROXY: http://gateway:8888
+  HTTPS_PROXY: http://gateway:8888
+  NO_PROXY: "localhost,127.0.0.1,172.28.0.10,app,gateway,chrome"
+
+# Internal service configuration template
+x-internal: &internal
+  depends_on:
+    dns-forwarder:
+      condition: service_healthy
+  dns:
+    - 172.28.0.11
+  networks:
+    internal:
+
 networks:
   # The internal network is used for communication between internal services,
   # and does not have direct access to the internet.
@@ -43,7 +59,7 @@ services:
   # The internal gateway service that handles egress traffic through tinyproxy.
   # Allowed domains must be allowlisted in the allowed_domains config file.
   gateway:
-    <<: *hardened
+    <<: [*hardened, *internal]
     build:
       context: ./docker
       dockerfile: tinyproxy.Dockerfile
@@ -64,11 +80,6 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
-    depends_on:
-      dns-forwarder:
-        condition: service_healthy
-    dns:
-      - 172.28.0.11
     networks:
       internal:
       edge:
@@ -97,14 +108,13 @@ services:
       edge:
 
   chrome:
-    <<: *hardened
+    <<: [*hardened, *internal]
     image: chromedp/headless-shell:latest
     # Run with init to reap zombie processes
     init: true
     environment:
+      <<: *internal-environment
       HOME: /tmp
-      HTTP_PROXY: http://gateway:8888
-      HTTPS_PROXY: http://gateway:8888
     command:
       - --disable-gpu
       - --user-data-dir=/tmp/chrome
@@ -116,11 +126,6 @@ services:
     shm_size: 1g
     expose:
       - "9222"
-    depends_on:
-      gateway:
-        condition: service_healthy
-    dns:
-      - 172.28.0.11
     networks:
       internal:
         ipv4_address: 172.28.0.10
@@ -128,17 +133,15 @@ services:
       - pi-workspace:/workspace:ro
 
   app:
-    <<: *hardened
+    <<: [*hardened, *internal]
     build:
       context: ./
       dockerfile: docker/Dockerfile
     image: local/pi-pocket:latest
     user: nonroot:nonroot
     environment:
+      <<: *internal-environment
       # Egress config
-      HTTP_PROXY: http://gateway:8888
-      HTTPS_PROXY: http://gateway:8888
-      NO_PROXY: "localhost,127.0.0.1,172.28.0.10,app,gateway,chrome"
       NODE_USE_ENV_PROXY: 1
       # App config
       PI_POCKET_BROWSER_URL: http://chrome:9222
@@ -161,15 +164,37 @@ services:
         condition: service_started
     expose:
       - "8787"
-    dns:
-      - 172.28.0.11
-    networks:
-      - internal
+    volumes:
+      - pi-home:/home/nonroot
+      - pi-data:/home/nonroot/.pi:ro
+      - pi-pocket-data:/home/nonroot/.pi-pocket
+      - pi-workspace:/workspace
+
+  # Optional interactive Pi CLI, sharing sign-ins and workspace with Pi Pocket.
+  agent:
+    <<: [*hardened, *internal]
+    image: local/pi-agent:latest
+    profiles:
+      - agent
+    build:
+      context: ./docker
+      dockerfile: pi-agent.Dockerfile
+    user: nonroot:nonroot
+    restart: "no"
+    stdin_open: true
+    tty: true
+    environment:
+      <<: *internal-environment
+      PI_CODING_AGENT_DIR: /home/nonroot/.pi/agent
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
+    mem_limit: 512m
+    cpus: 1
     volumes:
       - pi-home:/home/nonroot
       - pi-data:/home/nonroot/.pi
-      - pi-pocket-data:/home/nonroot/.pi-pocket
       - pi-workspace:/workspace
+    working_dir: /workspace
 
   ingress:
     <<: *hardened

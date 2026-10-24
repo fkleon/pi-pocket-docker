@@ -16,7 +16,8 @@ Then open the published address on the Docker host: <http://localhost:8787>.
 
 - **Docker Engine 29 or newer.** The app image uses `COPY --parents`, which older engines do not understand.
 - **Docker Compose v5** (`docker compose`).
-- About 3 GB of memory for the stack, most of it for the browser.
+- About 3 GB of memory for the default stack, most of it for the browser. The optional `agent` service has a 2 GB
+  memory limit; allow for that separately when running it alongside the stack.
 
 ## Services
 
@@ -25,8 +26,9 @@ Then open the published address on the Docker host: <http://localhost:8787>.
 | `gateway`       | `docker/tinyproxy.Dockerfile`        | internal, edge     | HTTP and HTTPS egress through a domain allowlist             |
 | `dns-forwarder` | `docker/dnsmasq.Dockerfile`          | internal, edge     | DNS, forwarding only the allowlisted domains                 |
 | `chrome`        | `chromedp/headless-shell:latest`     | internal           | the browser behind the Browser panel and Pi's `browser` tool |
-| `app`           | `docker/Dockerfile`                  | internal           | Pi Pocket, running as `nonroot` (uid 65532)                  |
-| `ingress`       | `nginxinc/nginx-unprivileged:alpine` | frontend, internal | reverse proxy; the only published port                       |
+| `app`           | `docker/Dockerfile`                  | internal           | Pi Pocket, running as `nonroot` (uid 65532)                 |
+| `agent`         | `docker/pi-agent.Dockerfile`         | internal           | optional interactive Pi CLI, sharing sign-ins and workspace |
+| `ingress`       | `nginxinc/nginx-unprivileged:alpine` | frontend, internal | reverse proxy; the only published port                      |
 
 ## Network isolation
 
@@ -70,6 +72,9 @@ reachable from the host.
                               the internet
 ```
 
+The optional `agent` service joins `internal` only. Like the app, it reaches the internet through the allowlisted
+gateway; it is not started by the default `docker compose up`.
+
 What can talk to what:
 
 | From            | To              | Port | What                               |
@@ -78,16 +83,18 @@ What can talk to what:
 | `ingress`       | `app`           | 8787 | reverse proxy                      |
 | `app`           | `chrome`        | 9222 | the DevTools protocol              |
 | `app`           | `gateway`       | 8888 | HTTP and HTTPS proxy               |
-| `app`           | `dns-forwarder` | 53   | DNS                                |
-| `chrome`        | `gateway`       | 8888 | page loads                         |
+| `app`           | `dns-forwarder` | 53   | DNS                                 |
+| `agent`         | `gateway`       | 8888 | proxied model and provider requests |
+| `agent`         | `dns-forwarder` | 53   | DNS                                 |
+| `chrome`        | `gateway`       | 8888 | page loads                          |
 | `chrome`        | `dns-forwarder` | 53   | DNS                                |
 | `gateway`       | internet        | 443  | proxied egress (`ConnectPort 443`) |
 | `dns-forwarder` | internet        | 53   | upstream DNS for allowlisted names |
 
 What cannot happen:
 
-- `app` and `chrome` cannot reach the internet directly. They are on `internal`, which has no route out; their only
-  way out is `gateway`.
+- `app`, `chrome`, and `agent` cannot reach the internet directly. They are on `internal`, which has no route out;
+  their only way out is `gateway`.
 - `chrome`'s DevTools port 9222 is never published, and the endpoint has no authentication.
 - 8787 is the only published port, and only `ingress` is on `frontend`.
 
@@ -112,15 +119,29 @@ docker compose up -d --force-recreate gateway dns-forwarder
 
 ## Configuration files
 
-Several files are copied into the image at build time so the app starts with sensible defaults:
+Several files are copied into the images at build time so the app and optional Pi CLI start with sensible defaults:
 
 - `docker/pi-pocket/config.json` — Pi Pocket's initial `config.json` with an owner user and the MCP extension
   enabled. Contains a default `ownerToken` ("letmein") for development; rotate it on first login.
 - `docker/pi/agent/settings.json` — Pi agent settings, including `collapseChangelog: true` and `codemode`
-  enabled by default via `defaultTools`.
-- `docker/pi/agent/mcp.json` — MCP server configuration, pointing to the Radius MCP endpoint.
-- `src/pocket-mcp/` — the pinned pocket-mcp submodule. The image copies `mcp.ts` and `mcp/` into Pi Pocket's extensions directory.
+  enabled by default via `defaultTools`; used by both the app and Pi CLI images.
+- `docker/pi/agent/mcp.json` — MCP server configuration, pointing to the Radius MCP endpoint; used by both images.
+- `src/pocket-mcp/` — the pinned pocket-mcp submodule. The image copies `mcp.ts` and `mcp/` into Pi Pocket's
+  extensions directory.
 - A remote extension (`whimsical.ts`) is fetched from GitHub at build time.
+
+## Run the Pi CLI
+
+The optional Pi CLI container uses the same `pi-data`, `pi-home`, and `pi-workspace` volumes as the app, so it shares
+Pi's sign-ins and the working files. Start it interactively with:
+
+```bash
+docker compose --profile agent run --build --rm agent
+```
+
+The container targets `linux/amd64`, is available only on the internal network, and uses the same allowlisted
+gateway for egress. On other host architectures it needs container-runtime emulation. `docker compose up` without the
+`agent` profile does not start it.
 
 ## Data and the workspace
 
@@ -164,8 +185,10 @@ docker compose cp ./workspace/. app:/workspace/
   allowlist any host it needs.
 - **Read-only root filesystem.** Every service runs with `read_only: true`, `cap_drop: [ALL]`, and
   `no-new-privileges`.
-- **Default-deny egress.** A process that escapes the app still cannot reach the internet except through the
-  allowlisted proxy.
+- **Default-deny egress.** A process that escapes the app or `agent` still cannot reach the internet except
+  through the allowlisted proxy.
+- **Shared agent access.** `agent` can run commands against the shared workspace and read the shared home volume
+  (including SSH keys) and Pi sign-ins. Use it only with work and credentials you intend it to access.
 - **The sign-in link is in the logs.** `docker compose logs app` prints the owner's sign-in link. Keep it private,
   as you would on the host.
 
@@ -179,8 +202,9 @@ docker compose down               # stop; the volumes stay
 docker compose down -v            # stop and delete the volumes too
 ```
 
-`gateway` and `dns-forwarder` must pass their healthchecks before `app` and `chrome` start. The launcher prints the
-address it detects inside the container; open the published one instead: `http://localhost:8787` on the Docker host,
+`gateway` and `dns-forwarder` must pass their healthchecks before `app` and `chrome` start; `agent` waits for the
+gateway before it runs. The launcher prints the address it detects inside the container; open the published one
+instead: `http://localhost:8787` on the Docker host,
 or `http://<host>:8787` from the network.
 
 ## Caveats

@@ -35,8 +35,7 @@ RUN groupadd --system --gid 65532 nonroot \
 
 RUN mkdir /home/nonroot && chown -R nonroot:nonroot /home/nonroot /workspace
 
-USER 65532
-
+USER 65532:65532
 RUN ["mkdir", "--parents", "/home/nonroot/.pi", "/home/nonroot/.pi-pocket"]
 
 # Pi Agent: config and extensions (local)
