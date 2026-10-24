@@ -1,3 +1,3 @@
-[submodule "src"]
-	path = src
+[submodule "pi-pocket"]
+	path = src/pi-pocket
 	url = https://github.com/fkleon/pi-pocket.git

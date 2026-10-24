@@ -15,11 +15,17 @@ RUN apt-get update \
 ENV NODE_ENV=production
 
 WORKDIR /app
-COPY src/package.json src/package-lock.json /app
+COPY src/pi-pocket/package.json src/pi-pocket/package-lock.json /app
 RUN npm ci --omit=dev
 
-#COPY src/ /app
-COPY --parents src/./bin/ src/./docs/ src/./src/ src/./types/ src/./web/ .
+#COPY src/pi-pocket/ /app
+COPY --parents \
+  ./src/pi-pocket/bin/ \
+  ./src/pi-pocket/docs/ \
+  ./src/pi-pocket/src/ \
+  ./src/pi-pocket/types/ \
+  ./src/pi-pocket/web/ \
+  .
 
 EXPOSE 8787
 WORKDIR /workspace
