@@ -2,6 +2,8 @@
 node_modules
 src/.git
 src/node_modules
+src/pi-pocket/.git
+src/pocket-mcp/.git
 .env
 .env.*
 *.log

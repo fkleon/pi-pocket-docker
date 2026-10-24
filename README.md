@@ -1,6 +1,6 @@
 # Pi Pocket Docker
 
-Docker Compose deployment for Pi Pocket. The application source is pinned as a Git submodule at `src/`.
+Docker Compose deployment for Pi Pocket. The application source and MCP extension are pinned as Git submodules at `src/pi-pocket/` and `src/pocket-mcp/`.
 
 Clone with the submodule, then start the stack:
 
@@ -19,4 +19,4 @@ docker compose up --build
 
 Open <http://localhost:8787> on the Docker host. See [docker/README.md](docker/README.md) for requirements, network layout, allowlist configuration, persistent volumes, and operations.
 
-The app image copies its source from `src/`. To change the Pi Pocket revision used by the deployment, update the `src` submodule and commit its new pointer.
+The app image copies Pi Pocket from `src/pi-pocket/` and the MCP extension from `src/pocket-mcp/`. To update either revision, update that submodule and commit its new pointer.

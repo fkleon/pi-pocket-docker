@@ -51,14 +51,18 @@ ADD \
   https://raw.githubusercontent.com/mitsuhiko/agent-stuff/refs/tags/1.6.0/extensions/whimsical.ts \
   /home/nonroot/.pi/agent/extensions/
 
-# Pi Pocket: config and extensions (local)
+# Pi Pocket: config and MCP extension (local)
 COPY \
   --chown=65532:65532 \
   ./docker/pi-pocket/config.json /home/nonroot/.pi-pocket/config.json
 
 COPY \
   --chown=65532:65532 \
-  ./docker/pi-pocket/extensions /home/nonroot/.pi-pocket/extensions
+  ./src/pocket-mcp/mcp.ts /home/nonroot/.pi-pocket/extensions/mcp.ts
+
+COPY \
+  --chown=65532:65532 \
+  ./src/pocket-mcp/mcp /home/nonroot/.pi-pocket/extensions/mcp
 
 VOLUME "/home/nonroot/.pi"
 VOLUME "/home/nonroot/.pi-pocket"

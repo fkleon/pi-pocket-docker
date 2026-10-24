@@ -1,3 +1,6 @@
 [submodule "pi-pocket"]
 	path = src/pi-pocket
 	url = https://github.com/fkleon/pi-pocket.git
+[submodule "pocket-mcp"]
+	path = src/pocket-mcp
+	url = https://github.com/fkleon/pocket-mcp.git

@@ -119,7 +119,7 @@ Several files are copied into the image at build time so the app starts with sen
 - `docker/pi/agent/settings.json` — Pi agent settings, including `collapseChangelog: true` and `codemode`
   enabled by default via `defaultTools`.
 - `docker/pi/agent/mcp.json` — MCP server configuration, pointing to the Radius MCP endpoint.
-- `docker/pi-pocket/extensions/` — the vendored pocket-mcp extension.
+- `src/pocket-mcp/` — the pinned pocket-mcp submodule. The image copies `mcp.ts` and `mcp/` into Pi Pocket's extensions directory.
 - A remote extension (`whimsical.ts`) is fetched from GitHub at build time.
 
 ## Data and the workspace
