@@ -137,7 +137,7 @@ services:
     build:
       context: ./
       dockerfile: docker/Dockerfile
-    image: local/pi-pocket:latest
+    image: local/pi-pocket:${PI_POCKET_VERSION:-latest}
     user: nonroot:nonroot
     environment:
       <<: *internal-environment
@@ -173,12 +173,15 @@ services:
   # Optional interactive Pi CLI, sharing sign-ins and workspace with Pi Pocket.
   agent:
     <<: [*hardened, *internal]
-    image: local/pi-agent:latest
+    image: local/pi-agent:${PI_AGENT_VERSION:-latest}
     profiles:
       - agent
     build:
       context: ./docker
       dockerfile: pi-agent.Dockerfile
+      args:
+        VERSION: ${PI_AGENT_VERSION}
+        CHECKSUM: ${PI_AGENT_CHECKSUM}
     user: nonroot:nonroot
     restart: "no"
     stdin_open: true
