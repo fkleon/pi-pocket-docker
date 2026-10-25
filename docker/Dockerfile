@@ -20,12 +20,12 @@ RUN npm ci --omit=dev
 
 #COPY src/pi-pocket/ /app
 COPY --parents \
-  ./src/pi-pocket/bin/ \
-  ./src/pi-pocket/docs/ \
-  ./src/pi-pocket/src/ \
-  ./src/pi-pocket/types/ \
-  ./src/pi-pocket/web/ \
-  .
+  ./src/pi-pocket/./bin/ \
+  ./src/pi-pocket/./docs/ \
+  ./src/pi-pocket/./src/ \
+  ./src/pi-pocket/./types/ \
+  ./src/pi-pocket/./web/ \
+  /app/
 
 EXPOSE 8787
 WORKDIR /workspace
