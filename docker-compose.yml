@@ -166,7 +166,7 @@ services:
       - "8787"
     volumes:
       - pi-home:/home/nonroot
-      - pi-data:/home/nonroot/.pi:ro
+      - pi-data:/home/nonroot/.pi:rw # Needs write access to agent.json.lock
       - pi-pocket-data:/home/nonroot/.pi-pocket
       - pi-workspace:/workspace
 
