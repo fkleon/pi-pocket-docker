@@ -155,8 +155,8 @@ services:
       PI_CODING_AGENT_DIR: /home/nonroot/.pi/agent
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
-    mem_limit: 512m
-    cpus: 1
+    mem_limit: 2g
+    cpus: 2
     depends_on:
       gateway:
         condition: service_healthy
