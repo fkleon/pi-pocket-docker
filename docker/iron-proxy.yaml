@@ -1,0 +1,40 @@
+# HTTP egress is intercepted by the tunnel listener. Keep dnsmasq as the DNS
+# forwarder during the first migration step.
+dns:
+  enabled: false
+
+proxy:
+  # The explicit-proxy clients use tunnel_listen. These listeners are required
+  # by iron-proxy but are unused in this deployment; use high ports so the
+  # gateway can retain cap_drop: [ALL].
+  http_listen: ":8081"
+  https_listen: ":8443"
+  tunnel_listen: ":8888"
+  max_request_body_bytes: 1048576
+
+tls:
+  mode: "mitm"
+  ca_cert: "/etc/iron-proxy-ca.crt"
+  ca_key: "/run/secrets/iron-proxy-ca.key"
+  cert_cache_size: 1000
+  leaf_cert_expiry_hours: 72
+
+transforms:
+  - name: allowlist
+    config:
+      # Keep in sync with docker/dnsmasq.conf. These initially mirror the
+      # existing tinyproxy allowlist; method/path restrictions can be added as
+      # provider requirements are audited.
+      domains:
+        - "radius.earendil.com"
+        - "radius.pi.dev"
+        - "pi.dev"
+        - "github.com"
+        - "github.githubassets.com"
+        - "raw.githubusercontent.com"
+        - "api.github.com"
+        - "api.individual.githubcopilot.com"
+        - "git.home.leonhardt.co.nz"
+
+log:
+  level: "info"
