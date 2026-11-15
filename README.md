@@ -3,11 +3,13 @@
 Docker Compose deployment for Pi Pocket. The application source and MCP extension are pinned as Git submodules at
 `src/pi-pocket/` and `src/pocket-mcp/`.
 
-Clone with the submodule, then start the stack:
+Clone with the submodule, generate the local egress-proxy CA as described in
+[docker/README.md](docker/README.md#generate-the-egress-proxy-ca), then start the stack:
 
 ```bash
 git clone --recurse-submodules <repository-url>
 cd pi-pocket-docker
+# Follow the CA-generation steps in docker/README.md
 docker compose up --build
 ```
 
@@ -15,6 +17,7 @@ If you already cloned without submodules, initialize it before building:
 
 ```bash
 git submodule update --init --recursive
+# Follow the CA-generation steps in docker/README.md
 docker compose up --build
 ```
 

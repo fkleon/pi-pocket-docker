@@ -48,35 +48,38 @@ networks:
 configs:
   dnsmasq_conf:
     file: ./docker/dnsmasq.conf
-  tinyproxy_conf:
-    file: ./docker/tinyproxy.conf
-  allowed_domains:
-    file: ./docker/tinyproxy.allowlist.conf
+  iron_proxy_conf:
+    file: ./docker/iron-proxy.yaml
+  iron_proxy_ca_cert:
+    file: ./docker/iron-proxy-ca.crt
   ingress_conf:
     file: ./docker/nginx.conf
 
+secrets:
+  iron_proxy_ca_key:
+    file: ./secrets/iron-proxy/ca.key
+
 services:
-  # The internal gateway service that handles egress traffic through tinyproxy.
-  # Allowed domains must be allowlisted in the allowed_domains config file.
+  # The internal gateway service that handles egress through iron-proxy.
+  # Its CA key is available only here; domain policy lives in iron-proxy.yaml.
   gateway:
     <<: [*hardened, *internal]
-    build:
-      context: ./docker
-      dockerfile: tinyproxy.Dockerfile
-    image: local/tinyproxy:latest
+    image: ironsh/iron-proxy:0.56.0@sha256:727da0cc35a6d73ed2913a38d56c4b9b4476c075149492e4fbf75552e83361ff
+    command: ["-config", "/etc/iron-proxy.yaml"]
     configs:
-      - source: tinyproxy_conf
-        target: /etc/tinyproxy/tinyproxy.conf
-      - source: allowed_domains
-        target: /etc/tinyproxy/allowed_domains
+      - source: iron_proxy_conf
+        target: /etc/iron-proxy.yaml
+      - source: iron_proxy_ca_cert
+        target: /etc/iron-proxy-ca.crt
+    secrets:
+      - source: iron_proxy_ca_key
+        target: iron-proxy-ca.key
     tmpfs:
       - /tmp
-      - /run
-    mem_limit: 128m
+    mem_limit: 256m
     cpus: 0.5
     healthcheck:
-      test:
-        ["CMD-SHELL", "curl --fail -x 127.0.0.1:8888 http://tinyproxy.stats"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/healthz"]
       interval: 10s
       timeout: 3s
       retries: 10
@@ -109,7 +112,10 @@ services:
 
   chrome:
     <<: [*hardened, *internal]
-    image: chromedp/headless-shell:latest
+    build:
+      context: ./docker
+      dockerfile: chrome.Dockerfile
+    image: local/pi-pocket-chrome:latest
     # Run with init to reap zombie processes
     init: true
     environment:

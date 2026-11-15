@@ -1,12 +1,15 @@
 # Running Pi Pocket with Docker Compose
 
 `docker-compose.yml` at the repository root runs Pi Pocket with a browser of its own and gates every outbound
-request through an allowlist. The app runs unprivileged on a read-only root filesystem; the browser, the HTTP proxy,
-and DNS each run in a container of their own. Only the reverse proxy is reachable from outside.
+request through an allowlist. The app runs unprivileged on a read-only root filesystem; the browser, the MITM egress
+proxy, and DNS each run in a container of their own. Only the reverse proxy is reachable from outside. Before the
+first start, generate a local CA for the egress proxy as described below. The private key stays outside the build
+context; the public certificate is baked into the client images and ignored by Git.
 
 This page describes the stack. The short version is in the repository's README:
 
 ```bash
+# Generate the local proxy CA first; see "Generate the egress-proxy CA" below.
 docker compose up --build
 ```
 
@@ -18,14 +21,15 @@ Then open the published address on the Docker host: <http://localhost:8787>.
 - **Docker Compose v5** (`docker compose`).
 - About 3 GB of memory for the default stack, most of it for the browser. The optional `agent` service has a 2 GB
   memory limit; allow for that separately when running it alongside the stack.
+- OpenSSL to generate the local MITM CA before starting the stack.
 
 ## Services
 
 | Service         | Built from / image                   | Networks           | Purpose                                                      |
 | --------------- | ------------------------------------ | ------------------ | ------------------------------------------------------------ |
-| `gateway`       | `docker/tinyproxy.Dockerfile`        | internal, edge     | HTTP and HTTPS egress through a domain allowlist             |
+| `gateway`       | `ironsh/iron-proxy:0.56.0`           | internal, edge     | HTTP/HTTPS MITM egress proxy with a host allowlist            |
 | `dns-forwarder` | `docker/dnsmasq.Dockerfile`          | internal, edge     | DNS, forwarding only the allowlisted domains                 |
-| `chrome`        | `chromedp/headless-shell:latest`     | internal           | the browser behind the Browser panel and Pi's `browser` tool |
+| `chrome`        | `docker/chrome.Dockerfile`           | internal           | browser image with the proxy CA in the OS trust store        |
 | `app`           | `docker/Dockerfile`                  | internal           | Pi Pocket, running as `nonroot` (uid 65532)                 |
 | `agent`         | `docker/pi-agent.Dockerfile`         | internal           | optional interactive Pi CLI, sharing sign-ins and workspace |
 | `ingress`       | `nginxinc/nginx-unprivileged:alpine` | frontend, internal | reverse proxy; the only published port                      |
@@ -58,11 +62,11 @@ reachable from the host.
      │                       │           │ /workspace (ro)       │
      └───────────┬───────────┘           └───────────┬───────────┘
                  │                                   │
-                 │ proxy :8888 / DNS :53             │ proxy :8888 / DNS :53
+                 │ MITM proxy :8888 / DNS :53        │ MITM proxy :8888 / DNS :53
                  ▼                                   ▼
      ┌───────────────────────┐           ┌───────────────────────┐
      │ gateway               │           │ dns-forwarder         │
-     │ tinyproxy             │           │ dnsmasq .11           │
+     │ iron-proxy            │           │ dnsmasq .11           │
      └───────────┬───────────┘           └───────────┬───────────┘
   ───────────────┼───────────────────────────────────┼──────────────
   edge · the only network with a route to the internet
@@ -88,7 +92,7 @@ What can talk to what:
 | `agent`         | `dns-forwarder` | 53   | DNS                                 |
 | `chrome`        | `gateway`       | 8888 | page loads                          |
 | `chrome`        | `dns-forwarder` | 53   | DNS                                |
-| `gateway`       | internet        | 443  | proxied egress (`ConnectPort 443`) |
+| `gateway`       | internet        | 80/443 | allowed HTTP and HTTPS upstream requests |
 | `dns-forwarder` | internet        | 53   | upstream DNS for allowlisted names |
 
 What cannot happen:
@@ -100,16 +104,18 @@ What cannot happen:
 
 ## The egress allowlist
 
-Two files gate egress, and both must allow a domain:
+During this first migration step, two files still gate egress, and both must allow a domain:
 
 - `docker/dnsmasq.conf` forwards only the domains listed with `server=/example.com/#`; every other name gets
   NXDOMAIN. Subdomains are included.
-- `docker/tinyproxy.allowlist.conf` is a list of plain hostnames (fnmatch-style, no regex escaping needed) matched
-  against the host, with `FilterDefaultDeny Yes`: only matching hosts pass.
+- `docker/iron-proxy.yaml` contains the HTTP/S host allowlist. It initially mirrors the former Tinyproxy list; path
+  and method restrictions can be added there after reviewing the actual provider requests.
 
-The defaults allow `radius.earendil.com` (an example provider), `radius.pi.dev`, and `pi.dev`. Replace them with the
-domains your models use. If a provider is missing from either file, runs against it fail: DNS refuses the name, or
-the proxy refuses the connection.
+The defaults allow `radius.earendil.com` (an example provider), `radius.pi.dev`, and `pi.dev`, plus the GitHub hosts
+and local Git host in the config. The Iron-proxy entries intentionally preserve the former host-level policy for
+this migration; all methods and paths remain allowed, and no credentials are injected yet. Replace the domains with
+the ones your models use. If a provider is missing from either file, runs against it fail: DNS refuses the name, or
+the proxy refuses the request.
 
 After editing either file, recreate the services so they read the new config:
 
@@ -117,9 +123,46 @@ After editing either file, recreate the services so they read the new config:
 docker compose up -d --force-recreate gateway dns-forwarder
 ```
 
+## Generate the egress-proxy CA
+
+Iron-proxy terminates TLS so it can apply request policy. The app, agent, and Chrome images install the CA into
+their OS trust store at build time with `update-ca-certificates`, following the
+[Docker CA certificate guide](https://docs.docker.com/engine/network/ca-certs/). Create one local CA before the first
+image build:
+
+```bash
+mkdir -p secrets/iron-proxy
+openssl genrsa -out secrets/iron-proxy/ca.key 4096
+openssl req -x509 -new -nodes \
+  -key secrets/iron-proxy/ca.key \
+  -sha256 -days 3650 \
+  -subj "/CN=Pi Pocket Iron Proxy CA" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" \
+  -out docker/iron-proxy-ca.crt
+
+# The proxy runs as uid 65534. Keep the key readable only by root and that group.
+sudo chown root:65534 secrets/iron-proxy/ca.key
+chmod 0440 secrets/iron-proxy/ca.key
+chmod 0444 docker/iron-proxy-ca.crt
+```
+
+`secrets/iron-proxy/` and `docker/iron-proxy-ca.crt` are excluded from Git. The private key is excluded from Docker
+build contexts and mounted only into `gateway`; the public certificate is included in client image build contexts
+and mounted into `gateway` as a Compose config. Back up the key securely and never put it in a build context. This is
+a local Compose file-backed secret, so check file ownership and readability if you run Docker Desktop or a rootless
+engine. Rebuild the app and Chrome images (and the optional agent image) whenever you rotate the CA, and recreate
+the gateway so it loads the new certificate. Chromium on Linux also manages certificates through an NSS shared
+database, so verify a Browser-panel HTTPS request after the build; if it rejects the CA, Chrome may need an
+additional browser-specific trust step.
+
+The MITM proxy can see decrypted request and response traffic. Keep it on the private internal/edge networks, and do
+not enable body capture or logging of credential headers.
+
 ## Configuration files
 
-Several files are copied into the images at build time so the app and optional Pi CLI start with sensible defaults:
+The app and optional Pi CLI images bundle their defaults, while Compose mounts the deployment-specific proxy
+configuration and CA:
 
 - `docker/pi-pocket/config.json` — Pi Pocket's initial `config.json` with an owner user and the MCP extension
   enabled. Contains a default `ownerToken` ("letmein") for development; rotate it on first login.
@@ -128,6 +171,9 @@ Several files are copied into the images at build time so the app and optional P
 - `docker/pi/agent/mcp.json` — MCP server configuration, pointing to the Radius MCP endpoint; used by both images.
 - `src/pocket-mcp/` — the pinned pocket-mcp submodule. The image copies `mcp.ts` and `mcp/` into Pi Pocket's
   extensions directory.
+- `docker/iron-proxy.yaml` — Iron-proxy listeners, CA paths, and initial host allowlist.
+- `docker/iron-proxy-ca.crt` — local public CA certificate copied into each client image and into the proxy config.
+- `docker/chrome.Dockerfile` — installs the CA into the Chrome image's OS trust store at build time.
 - A remote extension (`whimsical.ts`) is fetched from GitHub at build time.
 
 ## Run the Pi CLI
@@ -184,7 +230,9 @@ docker compose cp ./workspace/. app:/workspace/
 - **Lancet Guard is off.** The compose sets `PI_POCKET_GUARD=off`. Remove the line to turn the guard on, and
   allowlist any host it needs.
 - **Read-only root filesystem.** Every service runs with `read_only: true`, `cap_drop: [ALL]`, and
-  `no-new-privileges`.
+  `no-new-privileges`. Iron-proxy listens on high ports during this step, so it does not need `NET_BIND_SERVICE`.
+- **TLS interception.** The app, CLI, and Chrome images install the local proxy CA into their OS trust stores; keep
+  its private key available only to `gateway` and rotate it if compromised.
 - **Default-deny egress.** A process that escapes the app or `agent` still cannot reach the internet except
   through the allowlisted proxy.
 - **Shared agent access.** `agent` can run commands against the shared workspace and read the shared home volume
@@ -195,7 +243,7 @@ docker compose cp ./workspace/. app:/workspace/
 ## Operations
 
 ```bash
-docker compose up -d --build      # start; builds the three local images
+docker compose up -d --build      # start; builds the app, Chrome, and dnsmasq images
 docker compose logs -f app        # watch, and read the sign-in link
 docker compose ps                 # health of gateway and dns-forwarder
 docker compose down               # stop; the volumes stay
@@ -209,7 +257,8 @@ or `http://<host>:8787` from the network.
 
 ## Caveats
 
-- The images are not pinned to digests. Pin them for a reproducible build.
+- Iron-proxy is pinned to version 0.56.0 and its multi-architecture image digest. The Chrome base image and other
+  third-party images are not all pinned; pin them too for a fully reproducible deployment.
 - The app image installs `git`, `ca-certificates`, `ripgrep`, and `fd-find` on a Debian base, so Pi's shell tools
   work. It does not install a browser: that is the `chrome` service.
 - The app runs with `PI_OFFLINE=1` and `PI_TELEMETRY=0` — no version checks or telemetry.
