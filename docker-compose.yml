@@ -137,6 +137,8 @@ services:
     build:
       context: ./
       dockerfile: docker/Dockerfile
+      args:
+        NODE_VERSION: 26
     image: local/pi-pocket:${PI_POCKET_VERSION:-latest}
     user: nonroot:nonroot
     environment:
