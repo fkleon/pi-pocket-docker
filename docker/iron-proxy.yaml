@@ -14,8 +14,8 @@ proxy:
 
 tls:
   mode: "mitm"
-  ca_cert: "/etc/iron-proxy-ca.crt"
-  ca_key: "/run/secrets/iron-proxy-ca.key"
+  ca_cert: "/etc/ssl/certs/iron-proxy.pem"
+  ca_key: "/run/iron-proxy/ca.key"
   cert_cache_size: 1000
   leaf_cert_expiry_hours: 72
 

@@ -5,7 +5,7 @@ src/node_modules
 src/pi-pocket/.git
 src/pocket-mcp/.git
 .env
-# Exclude the CA signing key; docker/iron-proxy-ca.crt is public and included in client builds.
+# Exclude any legacy file-backed CA signing key.
 /secrets/
 .env.*
 *.log

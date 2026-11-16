@@ -2,14 +2,12 @@
 
 `docker-compose.yml` at the repository root runs Pi Pocket with a browser of its own and gates every outbound
 request through an allowlist. The app runs unprivileged on a read-only root filesystem; the browser, the MITM egress
-proxy, and DNS each run in a container of their own. Only the reverse proxy is reachable from outside. Before the
-first start, generate a local CA for the egress proxy as described below. The private key stays outside the build
-context; the public certificate is baked into the client images and ignored by Git.
+proxy, and DNS each run in a container of their own. Only the reverse proxy is reachable from outside. A one-shot
+initializer generates the egress CA on first startup and shares its public trust store through a named volume.
 
 This page describes the stack. The short version is in the repository's README:
 
 ```bash
-# Generate the local proxy CA first; see "Generate the egress-proxy CA" below.
 docker compose up --build
 ```
 
@@ -19,17 +17,19 @@ Then open the published address on the Docker host: <http://localhost:8787>.
 
 - **Docker Engine 29 or newer.** The app image uses `COPY --parents`, which older engines do not understand.
 - **Docker Compose v5** (`docker compose`).
-- About 3 GB of memory for the default stack, most of it for the browser. The optional `agent` service has a 2 GB
+- About 3 GB of memory for the default stack, most of it for the browser. The optional `agent` service has a 512 MB
   memory limit; allow for that separately when running it alongside the stack.
-- OpenSSL to generate the local MITM CA before starting the stack.
+- A Compose provider that supports `depends_on: condition: service_completed_successfully`. Test this when using
+  Podman Compose; provider implementations may differ.
 
 ## Services
 
 | Service         | Built from / image                   | Networks           | Purpose                                                      |
 | --------------- | ------------------------------------ | ------------------ | ------------------------------------------------------------ |
+| `ca-init`       | `docker/ca-init.Dockerfile`          | none               | one-shot CA and system trust-store initialization            |
 | `gateway`       | `ironsh/iron-proxy:0.56.0`           | internal, edge     | HTTP/HTTPS MITM egress proxy with a host allowlist            |
 | `dns-forwarder` | `docker/dnsmasq.Dockerfile`          | internal, edge     | DNS, forwarding only the allowlisted domains                 |
-| `chrome`        | `docker/chrome.Dockerfile`           | internal           | browser image with the proxy CA in the OS trust store        |
+| `chrome`        | `docker/chrome.Dockerfile`           | internal           | browser with the proxy CA imported into its NSS database     |
 | `app`           | `docker/Dockerfile`                  | internal           | Pi Pocket, running as `nonroot` (uid 65532)                 |
 | `agent`         | `docker/pi-agent.Dockerfile`         | internal           | optional interactive Pi CLI, sharing sign-ins and workspace |
 | `ingress`       | `nginxinc/nginx-unprivileged:alpine` | frontend, internal | reverse proxy; the only published port                      |
@@ -123,41 +123,38 @@ After editing either file, recreate the services so they read the new config:
 docker compose up -d --force-recreate gateway dns-forwarder
 ```
 
-## Generate the egress-proxy CA
+## Egress-proxy CA and trust
 
-Iron-proxy terminates TLS so it can apply request policy. The app, agent, and Chrome images install the CA into
-their OS trust store at build time with `update-ca-certificates`, following the
-[Docker CA certificate guide](https://docs.docker.com/engine/network/ca-certs/). Create one local CA before the first
-image build:
+On startup, `ca-init` creates a P-256 CA if the private volume is empty and reuses it on subsequent starts. It fails
+on an incomplete, expired, or mismatched pair. The initializer publishes the certificate alongside the Debian
+system roots as both a combined PEM bundle and an OpenSSL hashed certificate directory. All long-running services
+mount that public store read-only at `/etc/ssl/certs`; common OpenSSL, curl, Git and Python CA environment variables
+point to it. The app and agent also receive `NODE_EXTRA_CA_CERTS`, and Chrome imports the CA into its NSS database
+at each startup. Tools with their own independent trust stores may require additional configuration.
+
+The key and certificate are persisted in `ca-private`, mounted only by `ca-init` and `gateway`. The key is readable
+by the gateway's group (65534); the volume is not a substitute for protecting the container host or engine. Back up
+the private volume securely. The public store in `ca-public` is rebuilt on initialization from the CA and the
+initializer image's Debian CA package; it does not include custom roots added separately to other images. Rebuild the
+initializer image to pick up updated system roots; stop the stack before updating them. Unchanged stores are left
+in place when another Compose invocation starts. `IRON_PROXY_CA_DAYS` and `IRON_PROXY_CA_SUBJECT` affect newly
+generated CAs only.
+
+To rotate the CA, stop all services, securely back up the old private volume if needed, remove **only** the two CA
+volumes, then start again (this creates a new CA without rebuilding client images):
 
 ```bash
-mkdir -p secrets/iron-proxy
-openssl genrsa -out secrets/iron-proxy/ca.key 4096
-openssl req -x509 -new -nodes \
-  -key secrets/iron-proxy/ca.key \
-  -sha256 -days 3650 \
-  -subj "/CN=Pi Pocket Iron Proxy CA" \
-  -addext "basicConstraints=critical,CA:TRUE" \
-  -addext "keyUsage=critical,keyCertSign,cRLSign" \
-  -out docker/iron-proxy-ca.crt
-
-# The proxy runs as uid 65534. Keep the key readable only by root and that group.
-sudo chown root:65534 secrets/iron-proxy/ca.key
-chmod 0440 secrets/iron-proxy/ca.key
-chmod 0444 docker/iron-proxy-ca.crt
+docker compose down
+docker volume rm pi-pocket_ca-private pi-pocket_ca-public
+docker compose up -d --build
 ```
 
-`secrets/iron-proxy/` and `docker/iron-proxy-ca.crt` are excluded from Git. The private key is excluded from Docker
-build contexts and mounted only into `gateway`; the public certificate is included in client image build contexts
-and mounted into `gateway` as a Compose config. Back up the key securely and never put it in a build context. This is
-a local Compose file-backed secret, so check file ownership and readability if you run Docker Desktop or a rootless
-engine. Rebuild the app and Chrome images (and the optional agent image) whenever you rotate the CA, and recreate
-the gateway so it loads the new certificate. Chromium on Linux also manages certificates through an NSS shared
-database, so verify a Browser-panel HTTPS request after the build; if it rejects the CA, Chrome may need an
-additional browser-specific trust step.
+Chrome replaces its `iron-proxy` NSS entry on startup; the `chrome-nssdb` volume need not be deleted. Test browser
+and shell-tool HTTPS after rotation. `docker compose down -v` also deletes the CA and all application data volumes.
 
-The MITM proxy can see decrypted request and response traffic. Keep it on the private internal/edge networks, and do
-not enable body capture or logging of credential headers.
+If upgrading from the old file-based setup, the files `secrets/iron-proxy/ca.key` and
+`docker/iron-proxy-ca.crt` are not imported or deleted: a new CA is generated. Securely archive or delete the old
+key after the transition. The MITM proxy can see decrypted traffic; do not log credential headers or request bodies.
 
 ## Configuration files
 
@@ -172,8 +169,8 @@ configuration and CA:
 - `src/pocket-mcp/` — the pinned pocket-mcp submodule. The image copies `mcp.ts` and `mcp/` into Pi Pocket's
   extensions directory.
 - `docker/iron-proxy.yaml` — Iron-proxy listeners, CA paths, and initial host allowlist.
-- `docker/iron-proxy-ca.crt` — local public CA certificate copied into each client image and into the proxy config.
-- `docker/chrome.Dockerfile` — installs the CA into the Chrome image's OS trust store at build time.
+- `docker/ca-init.sh` and `docker/ca-init.Dockerfile` — initialize the CA and public trust store at startup.
+- `docker/chrome-entrypoint.sh` — imports the current CA into Chrome's NSS database before launching.
 - A remote extension (`whimsical.ts`) is fetched from GitHub at build time.
 
 ## Run the Pi CLI
@@ -191,14 +188,17 @@ gateway for egress. On other host architectures it needs container-runtime emula
 
 ## Data and the workspace
 
-Five named volumes hold everything that must survive a container:
+Named volumes hold state that must survive container recreation:
 
-| Volume           | Mounted at                 | Holds                                                                    |
-| ---------------- | -------------------------- | ------------------------------------------------------------------------ |
-| `pi-home`        | `/home/nonroot`            | `$HOME`: git config, SSH keys, package caches, and other per-user state  |
-| `pi-data`        | `/home/nonroot/.pi`        | Pi's sign-ins, models, skills, sessions, and MCP config                  |
-| `pi-pocket-data` | `/home/nonroot/.pi-pocket` | Pi Pocket's `config.json`, `pocket.sqlite`, drop-ins, and themes         |
-| `pi-workspace`   | `/workspace`               | the folder new sessions start in                                         |
+| Volume           | Mounted at                                    | Holds                                                                    |
+| ---------------- | --------------------------------------------- | ------------------------------------------------------------------------ |
+| `pi-home`        | `/home/nonroot`                               | `$HOME`: git config, SSH keys, package caches, and other per-user state  |
+| `pi-data`        | `/home/nonroot/.pi`                           | Pi's sign-ins, models, skills, sessions, and MCP config                  |
+| `pi-pocket-data` | `/home/nonroot/.pi-pocket`                    | Pi Pocket's `config.json`, `pocket.sqlite`, drop-ins, and themes         |
+| `pi-workspace`   | `/workspace`                                  | the folder new sessions start in                                         |
+| `chrome-nssdb`   | `/home/user/.local/share/pki/nssdb`           | Chrome's writable NSS certificate database                              |
+| `ca-private`     | `/run/iron-proxy` (gateway)                   | CA signing key and certificate                                          |
+| `ca-public`      | `/etc/ssl/certs`                              | public system roots and proxy CA; regenerated by `ca-init`               |
 
 None of them bind to a host folder by default. `pi-workspace` is a named volume, not `./workspace`. To work on a host
 folder instead, replace the `pi-workspace` mount in `docker-compose.yml` with a bind mount, and make it writable by
@@ -206,6 +206,7 @@ the app's user:
 
 ```
     volumes:
+      - *ca-certs
       - pi-home:/home/nonroot
       - pi-data:/home/nonroot/.pi
       - pi-pocket-data:/home/nonroot/.pi-pocket
@@ -229,10 +230,11 @@ docker compose cp ./workspace/. app:/workspace/
   every page's cookies and files. It stays on `internal`, and port 9222 is not published.
 - **Lancet Guard is off.** The compose sets `PI_POCKET_GUARD=off`. Remove the line to turn the guard on, and
   allowlist any host it needs.
-- **Read-only root filesystem.** Every service runs with `read_only: true`, `cap_drop: [ALL]`, and
-  `no-new-privileges`. Iron-proxy listens on high ports during this step, so it does not need `NET_BIND_SERVICE`.
-- **TLS interception.** The app, CLI, and Chrome images install the local proxy CA into their OS trust stores; keep
-  its private key available only to `gateway` and rotate it if compromised.
+- **Read-only root filesystem.** Every service uses `read_only: true`, drops capabilities, and uses
+  `no-new-privileges`. The one-shot `ca-init` runs as root with only `CHOWN` added back, to make its private volume
+  readable by the unprivileged gateway. Iron-proxy listens on high ports and does not need `NET_BIND_SERVICE`.
+- **TLS interception.** Services trust the local proxy CA at runtime. Only `ca-init` and `gateway` mount its private
+  key; rotate it if compromised.
 - **Default-deny egress.** A process that escapes the app or `agent` still cannot reach the internet except
   through the allowlisted proxy.
 - **Shared agent access.** `agent` can run commands against the shared workspace and read the shared home volume
@@ -243,15 +245,15 @@ docker compose cp ./workspace/. app:/workspace/
 ## Operations
 
 ```bash
-docker compose up -d --build      # start; builds the app, Chrome, and dnsmasq images
+docker compose up -d --build      # build images and initialize the CA before starting services
 docker compose logs -f app        # watch, and read the sign-in link
 docker compose ps                 # health of gateway and dns-forwarder
 docker compose down               # stop; the volumes stay
 docker compose down -v            # stop and delete the volumes too
 ```
 
-`gateway` and `dns-forwarder` must pass their healthchecks before `app` and `chrome` start; `agent` waits for the
-gateway before it runs. The launcher prints the address it detects inside the container; open the published one
+`ca-init` must complete before the dependent services start. `gateway` and `dns-forwarder` must pass their
+healthchecks before `app` starts; `chrome` waits for DNS, and `agent` waits for the gateway. The launcher prints the address it detects inside the container; open the published one
 instead: `http://localhost:8787` on the Docker host,
 or `http://<host>:8787` from the network.
 
