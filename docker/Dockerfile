@@ -35,9 +35,6 @@ RUN groupadd --system --gid 65532 nonroot \
 
 RUN mkdir /home/nonroot && chown -R nonroot:nonroot /home/nonroot /workspace
 
-COPY docker/iron-proxy-ca.crt /usr/local/share/ca-certificates/iron-proxy.crt
-RUN update-ca-certificates
-
 USER 65532:65532
 RUN ["mkdir", "--parents", "/home/nonroot/.pi", "/home/nonroot/.pi-pocket"]
 

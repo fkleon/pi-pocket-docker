@@ -28,9 +28,6 @@ RUN mkdir /opt/pi-coding-agent && \
     mkdir -p /home/nonroot/.pi /workspace && \
     chown -R nonroot:nonroot /home/nonroot /workspace
 
-COPY iron-proxy-ca.crt /usr/local/share/ca-certificates/iron-proxy.crt
-RUN update-ca-certificates
-
 USER 65532:65532
 RUN ["mkdir", "--parents", "/home/nonroot/.pi"]
 
