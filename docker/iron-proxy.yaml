@@ -35,6 +35,21 @@ transforms:
         - "api.github.com"
         - "api.individual.githubcopilot.com"
         - "git.home.leonhardt.co.nz"
+        - "api.typesafe.ai"
+
+  - name: secrets
+    config:
+      secrets:
+        - source:
+            type: file
+            path: /run/secrets/iron-proxy
+            json_key: TYPESAFE_API_KEY
+          replace:
+            proxy_value: proxy-typesafe-abc123
+            match_headers: [Authorization]
+          rules:
+            - host: api.typesafe.ai
+              require_tls: true
 
 log:
   level: "info"

@@ -48,6 +48,10 @@ x-internal: &internal
   networks:
     internal:
 
+secrets:
+  iron-proxy:
+    file: proxy-secrets.json
+
 networks:
   # The internal network is used for communication between internal services,
   # and does not have direct access to the internet.
@@ -112,6 +116,8 @@ services:
         condition: service_healthy
     tmpfs:
       - /tmp
+    secrets:
+      - iron-proxy
     mem_limit: 256m
     cpus: 0.5
     healthcheck:
@@ -246,6 +252,7 @@ services:
     environment:
       <<: *internal-environment
       PI_CODING_AGENT_DIR: /home/nonroot/.pi/agent
+      TYPESAFE_API_KEY: proxy-typesafe-abc123
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=128m
     mem_limit: 512m
