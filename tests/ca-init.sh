@@ -1,6 +1,13 @@
 #!/bin/sh
-# Host-side tests for the CA initializer; run as root with OpenSSL 3 and flock.
+# Host-side tests for the CA initializer; requires OpenSSL 3 and flock.
 set -eu
+# Exercise the exact non-root UID used by the initializer and gateway when
+# invoked as root, instead of accidentally hiding permission bugs.
+if [ "$(id -u)" = 0 ]; then
+  command -v setpriv >/dev/null 2>&1 || { echo 'setpriv required when testing as root' >&2; exit 1; }
+  exec setpriv --reuid 10003 --regid 10003 --clear-groups \
+    --bounding-set=-all --inh-caps=-all --ambient-caps=-all sh "$0" "$@"
+fi
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
@@ -62,12 +69,11 @@ if command -v node >/dev/null 2>&1 && node --version >/dev/null 2>&1 && command 
   wait "$server" 2>/dev/null || :
   trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 fi
-if command -v setpriv >/dev/null 2>&1 && [ "$(id -u)" = 0 ]; then
-  setpriv --reuid 65534 --regid 65534 --clear-groups test -r "$PRIVATE_CA_DIR/ca.key"
-  if setpriv --reuid 65532 --regid 65532 --clear-groups test -r "$PRIVATE_CA_DIR/ca.key"; then
-    echo 'Private key unexpectedly readable by a client user' >&2; exit 1
-  fi
-fi
+# The gateway shares the initializer's UID; no other UID can traverse the
+# private directory or read the key, even if the volume were mounted.
+[ "$(stat -c %u "$PRIVATE_CA_DIR/ca.key")" = "$(id -u)" ]
+[ "$(stat -c %a "$PRIVATE_CA_DIR")" = 700 ]
+[ "$(stat -c %a "$PRIVATE_CA_DIR/ca.key")" = 600 ]
 
 # Missing or mismatched private material must never cause silent regeneration.
 mv "$PRIVATE_CA_DIR/ca.crt" "$tmp/saved.crt"

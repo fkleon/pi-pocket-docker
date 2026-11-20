@@ -8,6 +8,7 @@ else
   db=$HOME/.local/share/pki/nssdb
 fi
 mkdir -p "$db"
+rm -f "$db/.nss-volume-init"
 if [ ! -e "$db/cert9.db" ]; then
   certutil -d "sql:$db" -N --empty-password
 fi

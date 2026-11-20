@@ -7,5 +7,6 @@ src/pocket-mcp/.git
 .env
 # Exclude any legacy file-backed CA signing key.
 /secrets/
+/proxy-secrets.json
 .env.*
 *.log

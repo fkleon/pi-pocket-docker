@@ -12,9 +12,9 @@ umask 077
 mkdir -p "$private" "$public"
 exec 9>"$private/.lock"
 flock 9
-# Only the initializer and the gateway's group can traverse the private volume.
-chown 0:65534 "$private"
-chmod 750 "$private"
+rm -f "$private/.ca-volume-init"
+# Only the initializer and gateway share this UID; clients never mount it.
+chmod 700 "$private"
 chmod 755 "$public"
 key=$private/ca.key
 cert=$private/ca.crt
@@ -25,9 +25,7 @@ if [ ! -e "$key" ] && [ ! -e "$cert" ]; then
   openssl req -x509 -new -sha256 -key "$work/ca.key" -days "$days" \
     -subj "$subject" -addext 'basicConstraints=critical,CA:TRUE' \
     -addext 'keyUsage=critical,keyCertSign,cRLSign' -out "$work/ca.crt"
-  # The gateway runs as 65534 with all capabilities dropped.
-  chown 0:65534 "$work/ca.key" "$work/ca.crt"
-  chmod 640 "$work/ca.key" "$work/ca.crt"
+  chmod 600 "$work/ca.key" "$work/ca.crt"
   mv "$work/ca.key" "$key"
   mv "$work/ca.crt" "$cert"
   rm -rf "$work"

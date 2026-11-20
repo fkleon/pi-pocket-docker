@@ -5,9 +5,14 @@ RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates libnss3-tools \
     && rm -rf /var/lib/apt/lists/*
 
+RUN groupadd --gid 10002 user \
+    && useradd --uid 10002 --gid user --home-dir /home/user --no-create-home --shell /bin/sh user \
+    && mkdir -p /home/user/.local/share/pki/nssdb /home/user/chrome \
+    && touch /home/user/.local/share/pki/nssdb/.nss-volume-init \
+    && chown -R user:user /home/user \
+    && chmod 700 /home/user
 ENV HOME=/home/user
-RUN mkdir -p $HOME/.local/share/pki/nssdb $HOME/chrome \
-    && chown -R 65534:65534 $HOME
+USER user:user
 
 COPY chrome-entrypoint.sh /usr/local/bin/chrome-entrypoint
 ENTRYPOINT ["/bin/sh", "/usr/local/bin/chrome-entrypoint"]

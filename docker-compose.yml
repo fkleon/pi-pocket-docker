@@ -20,8 +20,8 @@ x-ca-certs: &ca-certs
 # Hardened service configuration template
 x-hardened: &hardened # Read-only root filesystem
   read_only: true
-  # Run as nobody user
-  user: "65534:65534"
+  # Each image defines a non-root account named user.
+  user: "user:user"
   # Drop all capabilities
   cap_drop: [ALL]
   # Prevent privilege escalation
@@ -84,7 +84,6 @@ services:
     network_mode: none
     read_only: true
     cap_drop: [ALL]
-    cap_add: [CHOWN]
     security_opt:
       - no-new-privileges=true
     restart: "no"
@@ -95,13 +94,35 @@ services:
       - ca-private:/ca-private
       - ca-public:/ca-public
 
+  # Own the named workspace before Chrome can mount it read-only. App and
+  # agent use the same build-time UID/GID; this service never mounts host binds.
+  workspace-init:
+    build:
+      context: ./docker
+      dockerfile: workspace-init.Dockerfile
+      args:
+        APP_UID: ${APP_UID:-10001}
+        APP_GID: ${APP_GID:-10001}
+    image: local/pi-pocket-workspace-init:latest
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges=true
+    restart: "no"
+    volumes:
+      - pi-workspace:/workspace
+
   # The internal gateway service that handles egress through iron-proxy.
   # Its CA key is available only here; domain policy lives in iron-proxy.yaml.
   gateway:
     # Do not inherit the client DNS setting: the gateway must resolve upstream
     # hosts using the runtime's resolver, not its own interception listener.
     <<: *hardened
-    image: ironsh/iron-proxy:0.56.0@sha256:727da0cc35a6d73ed2913a38d56c4b9b4476c075149492e4fbf75552e83361ff
+    build:
+      context: ./docker
+      dockerfile: gateway.Dockerfile
+    image: local/pi-pocket-gateway:latest
     command: ["-config", "/etc/iron-proxy.yaml"]
     configs:
       - source: iron_proxy_conf
@@ -138,6 +159,14 @@ services:
       context: ./docker
       dockerfile: chrome.Dockerfile
     image: local/pi-pocket-chrome:latest
+    depends_on:
+      gateway:
+        condition: service_healthy
+      workspace-init:
+        condition: service_completed_successfully
+    # The browser can read group-readable files in the read-only workspace.
+    group_add:
+      - "${APP_GID:-10001}"
     # Run with init to reap zombie processes
     init: true
     environment:
@@ -147,8 +176,8 @@ services:
       - --user-data-dir=/home/user/chrome
       - --proxy-server=http://gateway:8888
     tmpfs:
-      - /home/user/chrome:rw,noexec,nosuid,size=256m,uid=65534,gid=65534,mode=0700
-      - /var/cache/fontconfig:rw,noexec,nosuid,size=128m,uid=65534,gid=65534,mode=0700
+      - /home/user/chrome:rw,noexec,nosuid,size=256m,uid=10002,gid=10002,mode=0700
+      - /var/cache/fontconfig:rw,noexec,nosuid,size=128m,uid=10002,gid=10002,mode=0700
     mem_limit: 2g
     cpus: 1.0
     shm_size: 1g
@@ -169,8 +198,9 @@ services:
       dockerfile: docker/Dockerfile
       args:
         NODE_VERSION: 26
+        APP_UID: ${APP_UID:-10001}
+        APP_GID: ${APP_GID:-10001}
     image: local/pi-pocket:${PI_POCKET_VERSION:-latest}
-    user: nonroot:nonroot
     environment:
       <<: *internal-environment
       # Egress config
@@ -183,9 +213,9 @@ services:
       PI_POCKET_GUARD: off
       PI_POCKET_PORT: 8787
       # Pi Pocket config (persistent data)
-      PI_POCKET_DIR: /home/nonroot/.pi-pocket
+      PI_POCKET_DIR: /home/user/.pi-pocket
       # Pi config (sign-ins, models, skills)
-      PI_CODING_AGENT_DIR: /home/nonroot/.pi/agent
+      PI_CODING_AGENT_DIR: /home/user/.pi/agent
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
     mem_limit: 2g
@@ -195,15 +225,17 @@ services:
         condition: service_completed_successfully
       gateway:
         condition: service_healthy
+      workspace-init:
+        condition: service_completed_successfully
       chrome:
         condition: service_started
     expose:
       - "8787"
     volumes:
       - *ca-certs
-      - pi-home:/home/nonroot
-      - pi-data:/home/nonroot/.pi:rw # Needs write access to agent.json.lock
-      - pi-pocket-data:/home/nonroot/.pi-pocket
+      - pi-home:/home/user
+      - pi-data:/home/user/.pi:rw # Needs write access to agent.json.lock
+      - pi-pocket-data:/home/user/.pi-pocket
       - pi-workspace:/workspace
 
   # Optional interactive Pi CLI, sharing sign-ins and workspace with Pi Pocket.
@@ -218,13 +250,14 @@ services:
       args:
         VERSION: ${PI_AGENT_VERSION}
         CHECKSUM: ${PI_AGENT_CHECKSUM}
-    user: nonroot:nonroot
+        APP_UID: ${APP_UID:-10001}
+        APP_GID: ${APP_GID:-10001}
     restart: "no"
     stdin_open: true
     tty: true
     environment:
       <<: *internal-environment
-      PI_CODING_AGENT_DIR: /home/nonroot/.pi/agent
+      PI_CODING_AGENT_DIR: /home/user/.pi/agent
       TYPESAFE_API_KEY: proxy-typesafe-abc123
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=128m
@@ -235,16 +268,21 @@ services:
         condition: service_completed_successfully
       gateway:
         condition: service_healthy
+      workspace-init:
+        condition: service_completed_successfully
     volumes:
       - *ca-certs
-      - pi-home:/home/nonroot
-      - pi-data:/home/nonroot/.pi
+      - pi-home:/home/user
+      - pi-data:/home/user/.pi
       - pi-workspace:/workspace
     working_dir: /workspace
 
   ingress:
     <<: *hardened
-    image: nginxinc/nginx-unprivileged:alpine
+    build:
+      context: ./docker
+      dockerfile: ingress.Dockerfile
+    image: local/pi-pocket-ingress:latest
     volumes:
       - *ca-certs
     configs:

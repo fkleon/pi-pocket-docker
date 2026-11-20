@@ -3,6 +3,9 @@ FROM node:${NODE_VERSION}-trixie-slim AS node
 
 FROM debian:trixie-slim AS pi-pocket
 
+ARG APP_UID=10001
+ARG APP_GID=10001
+
 COPY --from=node /usr/local/bin /usr/local/bin
 COPY --from=node /usr/local/lib /usr/local/lib
 
@@ -30,41 +33,45 @@ COPY --parents \
 EXPOSE 8787
 WORKDIR /workspace
 
-RUN groupadd --system --gid 65532 nonroot \
- && useradd --system --uid 65532 --gid nonroot --no-create-home nonroot
+RUN test "$APP_UID" -gt 0 && test "$APP_GID" -gt 0 \
+ && groupadd --gid "$APP_GID" user \
+ && useradd --uid "$APP_UID" --gid user --home-dir /home/user --no-create-home --shell /bin/bash user \
+ && mkdir -p /home/user/.pi /home/user/.pi-pocket /workspace \
+ && chown -R user:user /home/user /workspace \
+ && chmod 700 /home/user \
+ && chmod 2770 /workspace
 
-RUN mkdir /home/nonroot && chown -R nonroot:nonroot /home/nonroot /workspace
-
-USER 65532:65532
-RUN ["mkdir", "--parents", "/home/nonroot/.pi", "/home/nonroot/.pi-pocket"]
+COPY docker/app-entrypoint.sh /usr/local/bin/app-entrypoint
+ENV HOME=/home/user
+USER user:user
 
 # Pi Agent: config and extensions (local)
 COPY \
-  --chown=65532:65532 \
-  ./docker/pi/agent /home/nonroot/.pi/agent
+  --chown=user:user \
+  ./docker/pi/agent /home/user/.pi/agent
 
 # Pi Agent: extensions (remote)
 ADD \
   --checksum=sha256:5e71eddef1e04c104d41fe23d969d8b22f69794f5999d2e46f548260a0211506 \
-  --chown=65532:65532 \
+  --chown=user:user \
   https://raw.githubusercontent.com/mitsuhiko/agent-stuff/refs/tags/1.6.0/extensions/whimsical.ts \
-  /home/nonroot/.pi/agent/extensions/
+  /home/user/.pi/agent/extensions/
 
 # Pi Pocket: config and MCP extension (local)
 COPY \
-  --chown=65532:65532 \
-  ./docker/pi-pocket/config.json /home/nonroot/.pi-pocket/config.json
+  --chown=user:user \
+  ./docker/pi-pocket/config.json /home/user/.pi-pocket/config.json
 
 COPY \
-  --chown=65532:65532 \
-  ./src/pocket-mcp/mcp.ts /home/nonroot/.pi-pocket/extensions/mcp.ts
+  --chown=user:user \
+  ./src/pocket-mcp/mcp.ts /home/user/.pi-pocket/extensions/mcp.ts
 
 COPY \
-  --chown=65532:65532 \
-  ./src/pocket-mcp/mcp /home/nonroot/.pi-pocket/extensions/mcp
+  --chown=user:user \
+  ./src/pocket-mcp/mcp /home/user/.pi-pocket/extensions/mcp
 
-VOLUME "/home/nonroot/.pi"
-VOLUME "/home/nonroot/.pi-pocket"
+VOLUME "/home/user/.pi"
+VOLUME "/home/user/.pi-pocket"
 VOLUME "/workspace"
 
 ENV NPM_CONFIG_UPDATE_NOTIFIER=false \
@@ -72,5 +79,5 @@ ENV NPM_CONFIG_UPDATE_NOTIFIER=false \
     PI_OFFLINE=1 \
     PI_TELEMETRY=0
 
-ENTRYPOINT ["node", "/app/bin/pi-pocket.js"]
+ENTRYPOINT ["/bin/sh", "/usr/local/bin/app-entrypoint"]
 CMD ["--access", "lan", "--cwd", "/workspace"]

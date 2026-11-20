@@ -20,18 +20,21 @@ Then open the published address on the Docker host: <http://localhost:8787>.
 - About 3 GB of memory for the default stack, most of it for the browser. The optional `agent` service has a 512 MB
   memory limit; allow for that separately when running it alongside the stack.
 - A Compose provider that supports `depends_on: condition: service_completed_successfully`. Test this when using
-  Podman Compose; provider implementations may differ.
+  Podman Compose; provider implementations may differ. In particular, podman-compose 1.6.0 maps this condition to
+  `stopped`, without distinguishing successful from failed initialization: check the initializer exit codes before
+  using the stack.
 
 ## Services
 
 | Service         | Built from / image                   | Networks           | Purpose                                                      |
 | --------------- | ------------------------------------ | ------------------ | ------------------------------------------------------------ |
 | `ca-init`       | `docker/ca-init.Dockerfile`          | none               | one-shot CA and system trust-store initialization            |
-| `gateway`       | `ironsh/iron-proxy:0.56.0`           | internal, edge     | DNS interception and allowlisted HTTP/HTTPS MITM proxy        |
+| `workspace-init` | `docker/workspace-init.Dockerfile`  | none               | one-shot named workspace ownership and permissions setup     |
+| `gateway`       | `docker/gateway.Dockerfile`          | internal, edge     | DNS interception and allowlisted HTTP/HTTPS MITM proxy        |
 | `chrome`        | `docker/chrome.Dockerfile`           | internal           | browser with the proxy CA imported into its NSS database     |
-| `app`           | `docker/Dockerfile`                  | internal           | Pi Pocket, running as `nonroot` (uid 65532)                 |
+| `app`           | `docker/Dockerfile`                  | internal           | Pi Pocket                                                  |
 | `agent`         | `docker/pi-agent.Dockerfile`         | internal           | optional interactive Pi CLI, sharing sign-ins and workspace |
-| `ingress`       | `nginxinc/nginx-unprivileged:alpine` | frontend, internal | reverse proxy; the only published port                      |
+| `ingress`       | `docker/ingress.Dockerfile`          | frontend, internal | reverse proxy; the only published port                      |
 
 ## Network isolation
 
@@ -56,7 +59,7 @@ reachable from the host.
                                   ▼
      ┌───────────────────────┐           ┌───────────────────────┐
      │ app                   │  CDP:9222 │ chrome                │
-     │ Pi Pocket (nonroot)   ├──────────▶│ headless-shell        │
+     │ Pi Pocket (user)      ├──────────▶│ headless-shell        │
      │ /workspace (rw)       │           │ 172.28.0.10 (ro)      │
      │                       │           │ /workspace (ro)       │
      └───────────┬───────────┘           └───────────┬───────────┘
@@ -140,8 +143,9 @@ mount that public store read-only at `/etc/ssl/certs`; common OpenSSL, curl, Git
 point to it. The app and agent also receive `NODE_EXTRA_CA_CERTS`, and Chrome imports the CA into its NSS database
 at each startup. Tools with their own independent trust stores may require additional configuration.
 
-The key and certificate are persisted in `ca-private`, mounted only by `ca-init` and `gateway`. The key is readable
-by the gateway's group (65534); the volume is not a substitute for protecting the container host or engine. Back up
+The key and certificate are persisted in `ca-private`, mounted only by `ca-init` and `gateway`. Both run as UID
+10003; the private directory is mode 0700 and the key mode 0600. The volume is not a substitute for protecting the
+container host or engine. Back up
 the private volume securely. The public store in `ca-public` is rebuilt on initialization from the CA and the
 initializer image's Debian CA package; it does not include custom roots added separately to other images. Rebuild the
 initializer image to pick up updated system roots; stop the stack before updating them. Unchanged stores are left
@@ -200,30 +204,48 @@ Named volumes hold state that must survive container recreation:
 
 | Volume           | Mounted at                                    | Holds                                                                    |
 | ---------------- | --------------------------------------------- | ------------------------------------------------------------------------ |
-| `pi-home`        | `/home/nonroot`                               | `$HOME`: git config, SSH keys, package caches, and other per-user state  |
-| `pi-data`        | `/home/nonroot/.pi`                           | Pi's sign-ins, models, skills, sessions, and MCP config                  |
-| `pi-pocket-data` | `/home/nonroot/.pi-pocket`                    | Pi Pocket's `config.json`, `pocket.sqlite`, drop-ins, and themes         |
+| `pi-home`        | `/home/user`                                  | `$HOME`: git config, SSH keys, package caches, and other per-user state  |
+| `pi-data`        | `/home/user/.pi`                              | Pi's sign-ins, models, skills, sessions, and MCP config                  |
+| `pi-pocket-data` | `/home/user/.pi-pocket`                       | Pi Pocket's `config.json`, `pocket.sqlite`, drop-ins, and themes         |
 | `pi-workspace`   | `/workspace`                                  | the folder new sessions start in                                         |
 | `chrome-nssdb`   | `/home/user/.local/share/pki/nssdb`           | Chrome's writable NSS certificate database                              |
 | `ca-private`     | `/run/iron-proxy` (gateway)                   | CA signing key and certificate                                          |
 | `ca-public`      | `/etc/ssl/certs`                              | public system roots and proxy CA; regenerated by `ca-init`               |
 
-None of them bind to a host folder by default. `pi-workspace` is a named volume, not `./workspace`. To work on a host
-folder instead, replace the `pi-workspace` mount in `docker-compose.yml` with a bind mount, and make it writable by
-the app's user:
+None bind to a host folder by default. `pi-workspace` is a named volume, not `./workspace`.
 
-```
-    volumes:
-      - *ca-certs
-      - pi-home:/home/nonroot
-      - pi-data:/home/nonroot/.pi
-      - pi-pocket-data:/home/nonroot/.pi-pocket
-      - ./workspace:/workspace
-```
+## Container identities and bind mounts
 
-```bash
-mkdir -p workspace && sudo chown -R 65532:65532 workspace
-```
+Every image has a non-root account named `user` with `HOME=/home/user`. By default, app and agent use UID/GID
+10001 (as does `workspace-init`), Chrome uses 10002, gateway and CA initializer use 10003, and ingress uses 10004. Chrome also belongs to the
+app's workspace group and mounts that workspace read-only. App and agent start with umask 0002 and a setgid,
+group-writable workspace, so files created with ordinary default permissions are browser-readable; explicitly
+private files or directories are not. All services drop capabilities, including the CA initializer.
+
+These IDs and paths assume **fresh named volumes**. This configuration does not migrate volumes created by an
+older version. Back up anything needed and create new volumes before starting it; `docker compose down -v` deletes
+all stack data, including the CA.
+
+For a rootful Docker bind mount, set `APP_UID` and `APP_GID` to an appropriate existing non-root host identity in
+`.env`, rebuild **both** app and agent, and ensure the host workspace is writable by that identity. Replace both
+services' `pi-workspace:/workspace` mount with `./workspace:/workspace` and Chrome's with
+`./workspace:/workspace:ro`. Leave `workspace-init` on its named volume: it must not chmod your host workspace. The
+build args create the `user` account with those IDs; changing them later does not change ownership of existing
+volumes. Do not select UID or GID 0.
+
+For rootless Podman, container IDs are user-namespace IDs, not normally the host IDs with the same numbers. Named
+volumes are the default and avoid host-workspace ownership setup. For bind mounts, use an appropriate Podman
+user-namespace mapping such as `keep-id`, supported by your Compose provider, or arrange host ACLs for the mapped
+IDs. Containers sharing volumes must use compatible mappings: in particular, app, agent and Chrome need compatible
+workspace group mappings, and gateway and `ca-init` need compatible mappings for the CA. On SELinux systems, arrange
+appropriate labels for bind mounts too. Do not recursively change ownership or labels without understanding the
+impact on the host files.
+
+`proxy-secrets.json` is a file-backed Compose secret mounted only in `gateway`. It must be readable by the gateway's
+mapped UID 10003. Docker Compose file-backed secrets may retain host-file ownership and permissions, so a mode-0600
+file owned by another user will not work merely by setting Compose secret `uid`/`gid`. Grant the gateway read access
+using an appropriate host ACL or use a suitable secret provider; for rootless Podman the host-mapped UID and SELinux
+label must be used. Avoid making credentials world-readable. The file is excluded from Git and the root build context.
 
 Copy files out of the workspace volume, or back in:
 
@@ -238,9 +260,9 @@ docker compose cp ./workspace/. app:/workspace/
   every page's cookies and files. It stays on `internal`, and port 9222 is not published.
 - **Lancet Guard is off.** The compose sets `PI_POCKET_GUARD=off`. Remove the line to turn the guard on, and
   allowlist any host it needs.
-- **Read-only root filesystem.** Every service uses `read_only: true`, drops capabilities, and uses
-  `no-new-privileges`. The one-shot `ca-init` runs as root with only `CHOWN` added back, to make its private volume
-  readable by the unprivileged gateway. The gateway sets the network-namespace `ip_unprivileged_port_start` to 0 so
+- **Read-only root filesystem.** Every service, including `ca-init`, runs as a non-root user with `read_only: true`,
+  all capabilities dropped, and `no-new-privileges`. The gateway sets the network-namespace
+  `ip_unprivileged_port_start` to 0 so
   its non-root process can listen on ports 53, 80 and 443 without `NET_BIND_SERVICE`.
 - **TLS interception.** Services trust the local proxy CA at runtime. Only `ca-init` and `gateway` mount its private
   key; rotate it if compromised.
@@ -261,10 +283,19 @@ docker compose down               # stop; the volumes stay
 docker compose down -v            # stop and delete the volumes too
 ```
 
-`ca-init` must complete and `gateway` must pass its DNS and HTTP healthcheck before `app`, `chrome`, or `agent`
-starts. The launcher prints the address it detects inside the container; open the published one instead:
+`ca-init` and `workspace-init` must complete and `gateway` must pass its DNS and HTTP healthcheck before `app`,
+`chrome`, or `agent` starts. The launcher prints the address it detects inside the container; open the published one instead:
 `http://localhost:8787` on the Docker host,
 or `http://<host>:8787` from the network.
+
+To verify the container identities, CA isolation, secret readability, and workspace permissions against a running
+stack, build the optional agent and run:
+
+```bash
+docker compose --profile agent build agent
+sh tests/container-identities.sh
+# For Podman, use COMPOSE_ENGINE=podman sh tests/container-identities.sh
+```
 
 To check service-name resolution, DNS interception, allowed GitHub HTTPS, and rejected HTTP(S) requests against a
 running stack, run `sh tests/iron-proxy-dns.sh`. It starts the optional agent image and needs access to GitHub.
