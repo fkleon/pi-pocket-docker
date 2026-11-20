@@ -1,14 +1,15 @@
-# HTTP egress is intercepted by the tunnel listener. Keep dnsmasq as the DNS
-# forwarder during the first migration step.
+# Docker/Podman resolve service names internally; external A queries are
+# intercepted and return the gateway address. The gateway uses the runtime's
+# own upstream resolver and must not point its DNS back at this listener.
 dns:
-  enabled: false
+  enabled: true
+  listen: "172.28.0.11:53"
+  proxy_ip: "172.28.0.11"
 
 proxy:
-  # The explicit-proxy clients use tunnel_listen. These listeners are required
-  # by iron-proxy but are unused in this deployment; use high ports so the
-  # gateway can retain cap_drop: [ALL].
-  http_listen: ":8081"
-  https_listen: ":8443"
+  # Intercept direct HTTP(S) as well as clients using the explicit proxy.
+  http_listen: "172.28.0.11:80"
+  https_listen: "172.28.0.11:443"
   tunnel_listen: ":8888"
   max_request_body_bytes: 1048576
 
@@ -22,9 +23,8 @@ tls:
 transforms:
   - name: allowlist
     config:
-      # Keep in sync with docker/dnsmasq.conf. These initially mirror the
-      # existing tinyproxy allowlist; method/path restrictions can be added as
-      # provider requirements are audited.
+      # HTTP(S) policy is enforced here, not by the DNS listener.
+      # Add method/path restrictions as provider requirements are audited.
       domains:
         - "radius.earendil.com"
         - "radius.pi.dev"
