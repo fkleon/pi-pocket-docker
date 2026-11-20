@@ -41,7 +41,7 @@ x-internal-environment: &internal-environment
 # Internal service configuration template
 x-internal: &internal
   depends_on:
-    dns-forwarder:
+    gateway:
       condition: service_healthy
   dns:
     - 172.28.0.11
@@ -69,8 +69,6 @@ networks:
     enable_ipv6: false
 
 configs:
-  dnsmasq_conf:
-    file: ./docker/dnsmasq.conf
   iron_proxy_conf:
     file: ./docker/iron-proxy.yaml
   ingress_conf:
@@ -100,7 +98,9 @@ services:
   # The internal gateway service that handles egress through iron-proxy.
   # Its CA key is available only here; domain policy lives in iron-proxy.yaml.
   gateway:
-    <<: [*hardened, *internal]
+    # Do not inherit the client DNS setting: the gateway must resolve upstream
+    # hosts using the runtime's resolver, not its own interception listener.
+    <<: *hardened
     image: ironsh/iron-proxy:0.56.0@sha256:727da0cc35a6d73ed2913a38d56c4b9b4476c075149492e4fbf75552e83361ff
     command: ["-config", "/etc/iron-proxy.yaml"]
     configs:
@@ -112,8 +112,10 @@ services:
     depends_on:
       ca-init:
         condition: service_completed_successfully
-      dns-forwarder:
-        condition: service_healthy
+    # Allow this non-root process to bind DNS and transparent HTTP(S) ports
+    # without adding capabilities. This sysctl is scoped to its network namespace.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0
     tmpfs:
       - /tmp
     secrets:
@@ -121,37 +123,10 @@ services:
     mem_limit: 256m
     cpus: 0.5
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/healthz"]
+      test: ["CMD-SHELL", "nslookup -type=A healthcheck.invalid 172.28.0.11 | awk '/^Name:/{seen=1;next} seen && /^Address:[[:space:]]*172[.]28[.]0[.]11$/{ok=1} END{exit !ok}' && wget -q -O /dev/null http://127.0.0.1:9090/healthz"]
       interval: 10s
       timeout: 3s
       retries: 10
-    networks:
-      internal:
-      edge:
-
-  # The DNS forwarder service that handles internal DNS resolution.
-  # Allowed domains must be allowlisted in the dnsmasq config file.
-  dns-forwarder:
-    <<: *hardened
-    build:
-      context: ./docker
-      dockerfile: dnsmasq.Dockerfile
-    image: local/dnsmasq:latest
-    depends_on:
-      ca-init:
-        condition: service_completed_successfully
-    volumes:
-      - *ca-certs
-    configs:
-      - source: dnsmasq_conf
-        target: /etc/dnsmasq.conf
-    healthcheck:
-      test: ["CMD-SHELL", "dnsmasq --test"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-    mem_limit: 128m
-    cpus: 0.1
     networks:
       internal:
         ipv4_address: 172.28.0.11
@@ -218,8 +193,6 @@ services:
     depends_on:
       ca-init:
         condition: service_completed_successfully
-      dns-forwarder:
-        condition: service_healthy
       gateway:
         condition: service_healthy
       chrome:
@@ -260,8 +233,6 @@ services:
     depends_on:
       ca-init:
         condition: service_completed_successfully
-      dns-forwarder:
-        condition: service_healthy
       gateway:
         condition: service_healthy
     volumes:

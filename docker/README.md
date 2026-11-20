@@ -1,9 +1,9 @@
 # Running Pi Pocket with Docker Compose
 
 `docker-compose.yml` at the repository root runs Pi Pocket with a browser of its own and gates every outbound
-request through an allowlist. The app runs unprivileged on a read-only root filesystem; the browser, the MITM egress
-proxy, and DNS each run in a container of their own. Only the reverse proxy is reachable from outside. A one-shot
-initializer generates the egress CA on first startup and shares its public trust store through a named volume.
+request through an allowlist. The app runs unprivileged on a read-only root filesystem, with a separate browser.
+The MITM egress proxy also handles DNS interception. Only the reverse proxy is reachable from outside. A one-shot initializer
+generates the egress CA on first startup and shares its public trust store through a named volume.
 
 This page describes the stack. The short version is in the repository's README:
 
@@ -27,8 +27,7 @@ Then open the published address on the Docker host: <http://localhost:8787>.
 | Service         | Built from / image                   | Networks           | Purpose                                                      |
 | --------------- | ------------------------------------ | ------------------ | ------------------------------------------------------------ |
 | `ca-init`       | `docker/ca-init.Dockerfile`          | none               | one-shot CA and system trust-store initialization            |
-| `gateway`       | `ironsh/iron-proxy:0.56.0`           | internal, edge     | HTTP/HTTPS MITM egress proxy with a host allowlist            |
-| `dns-forwarder` | `docker/dnsmasq.Dockerfile`          | internal, edge     | DNS, forwarding only the allowlisted domains                 |
+| `gateway`       | `ironsh/iron-proxy:0.56.0`           | internal, edge     | DNS interception and allowlisted HTTP/HTTPS MITM proxy        |
 | `chrome`        | `docker/chrome.Dockerfile`           | internal           | browser with the proxy CA imported into its NSS database     |
 | `app`           | `docker/Dockerfile`                  | internal           | Pi Pocket, running as `nonroot` (uid 65532)                 |
 | `agent`         | `docker/pi-agent.Dockerfile`         | internal           | optional interactive Pi CLI, sharing sign-ins and workspace |
@@ -62,16 +61,18 @@ reachable from the host.
      │                       │           │ /workspace (ro)       │
      └───────────┬───────────┘           └───────────┬───────────┘
                  │                                   │
-                 │ MITM proxy :8888 / DNS :53        │ MITM proxy :8888 / DNS :53
-                 ▼                                   ▼
-     ┌───────────────────────┐           ┌───────────────────────┐
-     │ gateway               │           │ dns-forwarder         │
-     │ iron-proxy            │           │ dnsmasq .11           │
-     └───────────┬───────────┘           └───────────┬───────────┘
-  ───────────────┼───────────────────────────────────┼──────────────
+                 │                                   │
+                 └───────────────┬───────────────────┘
+                                 ▼
+                      ┌───────────────────────┐
+                      │ gateway               │
+                      │ iron-proxy .11        │
+                      │ DNS :53 / proxy :8888 │
+                      │ direct HTTP(S) :80/443│
+                      └───────────┬───────────┘
+  ────────────────────────────────┼──────────────────────────────────
   edge · the only network with a route to the internet
-  ───────────────┼───────────────────────────────────┼──────────────
-                 └────────────────┬──────────────────┘
+  ────────────────────────────────┼──────────────────────────────────
                                   ▼
                               the internet
 ```
@@ -86,14 +87,11 @@ What can talk to what:
 | host            | `ingress`       | 8787 | the published app                  |
 | `ingress`       | `app`           | 8787 | reverse proxy                      |
 | `app`           | `chrome`        | 9222 | the DevTools protocol              |
-| `app`           | `gateway`       | 8888 | HTTP and HTTPS proxy               |
-| `app`           | `dns-forwarder` | 53   | DNS                                 |
-| `agent`         | `gateway`       | 8888 | proxied model and provider requests |
-| `agent`         | `dns-forwarder` | 53   | DNS                                 |
-| `chrome`        | `gateway`       | 8888 | page loads                          |
-| `chrome`        | `dns-forwarder` | 53   | DNS                                |
+| `app`, `agent`, `chrome` | `gateway` | 53/UDP | DNS interception                   |
+| `app`, `agent`, `chrome` | `gateway` | 8888   | explicit HTTP/HTTPS proxy          |
+| `app`, `agent`, `chrome` | `gateway` | 80/443 | DNS-intercepted direct HTTP/HTTPS  |
 | `gateway`       | internet        | 80/443 | allowed HTTP and HTTPS upstream requests |
-| `dns-forwarder` | internet        | 53   | upstream DNS for allowlisted names |
+| `gateway`       | runtime DNS     | 53   | upstream lookups for proxy requests |
 
 What cannot happen:
 
@@ -102,25 +100,35 @@ What cannot happen:
 - `chrome`'s DevTools port 9222 is never published, and the endpoint has no authentication.
 - 8787 is the only published port, and only `ingress` is on `frontend`.
 
-## The egress allowlist
+## DNS and the egress allowlist
 
-During this first migration step, two files still gate egress, and both must allow a domain:
+The runtime's embedded DNS resolves Compose service names. External A queries from the internal services go to
+Iron-proxy at `172.28.0.11` and receive that same address, **including names not on the allowlist**. If changing
+this address, update the gateway's Compose IP, client DNS setting, healthcheck and `docker/iron-proxy.yaml` together. The listener is
+UDP-only and returns no AAAA address for intercepted names. This differs from dnsmasq: DNS no longer returns
+NXDOMAIN for unlisted domains or the real address for listed ones. The gateway itself uses the runtime's upstream
+resolver, not its own listener, so it can resolve real upstream addresses, including local names supplied by your
+host's DNS.
 
-- `docker/dnsmasq.conf` forwards only the domains listed with `server=/example.com/#`; every other name gets
-  NXDOMAIN. Subdomains are included.
-- `docker/iron-proxy.yaml` contains the HTTP/S host allowlist. It initially mirrors the former Tinyproxy list; path
-  and method restrictions can be added there after reviewing the actual provider requests.
+Clients can use the explicit proxy on port 8888 or connect to an intercepted address on ports 80/443. In both cases,
+`docker/iron-proxy.yaml` enforces the HTTP/HTTPS allowlist; an unlisted request is rejected by the proxy, not DNS.
+Other direct internet traffic remains blocked by the internal network. Tools that need real DNS answers, DNS over
+TCP, or non-HTTP protocols need a different arrangement. The proxy's DNS interception is not a DNS allowlist.
 
-The defaults allow `radius.earendil.com` (an example provider), `radius.pi.dev`, and `pi.dev`, plus the GitHub hosts
-and local Git host in the config. The Iron-proxy entries intentionally preserve the former host-level policy for
-this migration; all methods and paths remain allowed, and no credentials are injected yet. Replace the domains with
-the ones your models use. If a provider is missing from either file, runs against it fail: DNS refuses the name, or
-the proxy refuses the request.
-
-After editing either file, recreate the services so they read the new config:
+The defaults allow `radius.earendil.com`, `radius.pi.dev`, `pi.dev`, the listed GitHub hosts, the local Git host and
+`api.typesafe.ai`. Edit the transform's `domains` or rules for your providers; the same file also configures secret
+replacement. After editing it, recreate the gateway:
 
 ```bash
-docker compose up -d --force-recreate gateway dns-forwarder
+docker compose up -d --force-recreate gateway
+```
+
+When upgrading from the dnsmasq stack, remove the old container before starting the gateway, which takes over its
+internal IP (the named volumes are preserved):
+
+```bash
+docker compose down --remove-orphans
+docker compose up -d --build --remove-orphans
 ```
 
 ## Egress-proxy CA and trust
@@ -232,7 +240,8 @@ docker compose cp ./workspace/. app:/workspace/
   allowlist any host it needs.
 - **Read-only root filesystem.** Every service uses `read_only: true`, drops capabilities, and uses
   `no-new-privileges`. The one-shot `ca-init` runs as root with only `CHOWN` added back, to make its private volume
-  readable by the unprivileged gateway. Iron-proxy listens on high ports and does not need `NET_BIND_SERVICE`.
+  readable by the unprivileged gateway. The gateway sets the network-namespace `ip_unprivileged_port_start` to 0 so
+  its non-root process can listen on ports 53, 80 and 443 without `NET_BIND_SERVICE`.
 - **TLS interception.** Services trust the local proxy CA at runtime. Only `ca-init` and `gateway` mount its private
   key; rotate it if compromised.
 - **Default-deny egress.** A process that escapes the app or `agent` still cannot reach the internet except
@@ -247,18 +256,25 @@ docker compose cp ./workspace/. app:/workspace/
 ```bash
 docker compose up -d --build      # build images and initialize the CA before starting services
 docker compose logs -f app        # watch, and read the sign-in link
-docker compose ps                 # health of gateway and dns-forwarder
+docker compose ps                 # gateway health, including DNS
 docker compose down               # stop; the volumes stay
 docker compose down -v            # stop and delete the volumes too
 ```
 
-`ca-init` must complete before the dependent services start. `gateway` and `dns-forwarder` must pass their
-healthchecks before `app` starts; `chrome` waits for DNS, and `agent` waits for the gateway. The launcher prints the address it detects inside the container; open the published one
-instead: `http://localhost:8787` on the Docker host,
+`ca-init` must complete and `gateway` must pass its DNS and HTTP healthcheck before `app`, `chrome`, or `agent`
+starts. The launcher prints the address it detects inside the container; open the published one instead:
+`http://localhost:8787` on the Docker host,
 or `http://<host>:8787` from the network.
+
+To check service-name resolution, DNS interception, allowed GitHub HTTPS, and rejected HTTP(S) requests against a
+running stack, run `sh tests/iron-proxy-dns.sh`. It starts the optional agent image and needs access to GitHub.
+For a host-side test without containers, set `IRON_PROXY_BIN` to the verified v0.56.0 release binary and run
+`sh tests/iron-proxy-local.sh`; this checks the proxy config, DNS, direct HTTPS, and the explicit proxy.
 
 ## Caveats
 
+- The runtime must permit the gateway's namespaced `net.ipv4.ip_unprivileged_port_start` sysctl. Verify this and
+  internal service-name resolution with your Podman Compose provider; behavior may differ from Docker Compose.
 - Iron-proxy is pinned to version 0.56.0 and its multi-architecture image digest. The Chrome base image and other
   third-party images are not all pinned; pin them too for a fully reproducible deployment.
 - The app image installs `git`, `ca-certificates`, `ripgrep`, and `fd-find` on a Debian base, so Pi's shell tools
