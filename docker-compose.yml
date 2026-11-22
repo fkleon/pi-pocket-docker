@@ -158,6 +158,9 @@ services:
     build:
       context: ./docker
       dockerfile: chrome.Dockerfile
+      args:
+        APP_UID: 10002
+        APP_GID: 10002
     image: local/pi-pocket-chrome:latest
     depends_on:
       gateway:
@@ -195,7 +198,7 @@ services:
     <<: [*hardened, *internal]
     build:
       context: ./
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/app.Dockerfile
       args:
         NODE_VERSION: 26
         APP_UID: ${APP_UID:-10001}
@@ -203,6 +206,7 @@ services:
     image: local/pi-pocket:${PI_POCKET_VERSION:-latest}
     environment:
       <<: *internal-environment
+      UMASK: 0002
       # Egress config
       NODE_USE_ENV_PROXY: 1
       NODE_OPTIONS: "--use-system-ca"
@@ -216,6 +220,8 @@ services:
       PI_POCKET_DIR: /home/user/.pi-pocket
       # Pi config (sign-ins, models, skills)
       PI_CODING_AGENT_DIR: /home/user/.pi/agent
+      # API keys and credentials
+      TYPESAFE_API_KEY: proxy-typesafe-abc123
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
     mem_limit: 2g
@@ -246,7 +252,7 @@ services:
       - agent
     build:
       context: ./docker
-      dockerfile: pi-agent.Dockerfile
+      dockerfile: agent.Dockerfile
       args:
         VERSION: ${PI_AGENT_VERSION}
         CHECKSUM: ${PI_AGENT_CHECKSUM}
@@ -257,7 +263,10 @@ services:
     tty: true
     environment:
       <<: *internal-environment
+      UMASK: 0002
+      # Agent config
       PI_CODING_AGENT_DIR: /home/user/.pi/agent
+      # API keys and credentials
       TYPESAFE_API_KEY: proxy-typesafe-abc123
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=128m
@@ -279,10 +288,8 @@ services:
 
   ingress:
     <<: *hardened
-    build:
-      context: ./docker
-      dockerfile: ingress.Dockerfile
-    image: local/pi-pocket-ingress:latest
+    image: nginxinc/nginx-unprivileged:alpine
+    user: nginx:nginx
     volumes:
       - *ca-certs
     configs:

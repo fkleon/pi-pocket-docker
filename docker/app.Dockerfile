@@ -41,7 +41,6 @@ RUN test "$APP_UID" -gt 0 && test "$APP_GID" -gt 0 \
  && chmod 700 /home/user \
  && chmod 2770 /workspace
 
-COPY docker/app-entrypoint.sh /usr/local/bin/app-entrypoint
 ENV HOME=/home/user
 USER user:user
 
@@ -79,5 +78,5 @@ ENV NPM_CONFIG_UPDATE_NOTIFIER=false \
     PI_OFFLINE=1 \
     PI_TELEMETRY=0
 
-ENTRYPOINT ["/bin/sh", "/usr/local/bin/app-entrypoint"]
+ENTRYPOINT ["node", "/app/bin/pi-pocket.js"]
 CMD ["--access", "lan", "--cwd", "/workspace"]

@@ -32,7 +32,6 @@ RUN mkdir /opt/pi-coding-agent && \
     chown -R user:user /home/user /workspace && \
     chmod 700 /home/user && chmod 2770 /workspace
 
-COPY agent-entrypoint.sh /usr/local/bin/agent-entrypoint
 USER user:user
 
 # Pi Agent: config and extensions (local)
@@ -54,4 +53,4 @@ ENV HOME=/home/user \
     PI_TELEMETRY=0
 
 WORKDIR /workspace
-ENTRYPOINT ["/bin/sh", "/usr/local/bin/agent-entrypoint"]
+ENTRYPOINT ["/usr/bin/pi"]
