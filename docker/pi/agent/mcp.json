@@ -2,6 +2,9 @@
     "mcpServers": {
         "radius": {
             "url": "https://radius.pi.dev/mcp"
+        },
+        "github": {
+            "url": "https://api.githubcopilot.com/mcp"
         }
     }
 }

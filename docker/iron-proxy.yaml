@@ -26,16 +26,19 @@ transforms:
       # HTTP(S) policy is enforced here, not by the DNS listener.
       # Add method/path restrictions as provider requirements are audited.
       domains:
-        - "radius.earendil.com"
-        - "radius.pi.dev"
-        - "pi.dev"
-        - "github.com"
-        - "github.githubassets.com"
-        - "raw.githubusercontent.com"
-        - "api.github.com"
-        - "api.individual.githubcopilot.com"
-        - "git.home.leonhardt.co.nz"
-        - "api.typesafe.ai"
+        # LLM API providers
+        - radius.earendil.com
+        - radius.pi.dev
+        - pi.dev
+        - api.individual.githubcopilot.com
+        - api.githubcopilot.com
+        - api.typesafe.ai
+        # Source code
+        - github.com
+        - github.githubassets.com
+        - raw.githubusercontent.com
+        - api.github.com
+        - git.home.leonhardt.co.nz
 
   - name: secrets
     config:
