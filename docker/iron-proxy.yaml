@@ -61,5 +61,17 @@ transforms:
               paths: ["/v1/*"]
               require_tls: true
 
+        - source:
+            type: file
+            path: /run/secrets/iron-proxy
+            json_key: GITHUB_RO_KEY
+          inject:
+            header: "Authorization"
+            formatter: 'Basic {{ base64 "x-access-token:" .Value }}'
+          rules:
+            - host: github.com
+              paths: ["/fkleon/*"]
+              require_tls: true
+
 log:
   level: "info"
