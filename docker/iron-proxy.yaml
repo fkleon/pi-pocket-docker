@@ -39,6 +39,11 @@ transforms:
         - raw.githubusercontent.com
         - api.github.com
         - git.home.leonhardt.co.nz
+        # Package registries
+        - registry.npmjs.org
+        - "*.pypi.org"
+        - files.pythonhosted.org
+        - proxy.golang.org
 
   - name: secrets
     config:
