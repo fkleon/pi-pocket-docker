@@ -100,13 +100,12 @@ services:
     build:
       context: ./docker
       dockerfile: workspace-init.Dockerfile
-      args:
-        APP_UID: ${APP_UID:-10001}
-        APP_GID: ${APP_GID:-10001}
     image: local/pi-pocket-workspace-init:latest
+    user: ${APP_UID:-10001}:${APP_GID:-10001}
     network_mode: none
     read_only: true
     cap_drop: [ALL]
+    cap_add: [CHOWN]
     security_opt:
       - no-new-privileges=true
     restart: "no"
