@@ -45,10 +45,12 @@ transforms:
             path: /run/secrets/iron-proxy
             json_key: TYPESAFE_API_KEY
           replace:
-            proxy_value: proxy-typesafe-abc123
+            proxy_value: proxy-typesafe-token
             match_headers: [Authorization]
           rules:
             - host: api.typesafe.ai
+              methods: ["GET", "POST"]
+              paths: ["/v1/*"]
               require_tls: true
 
 log:
