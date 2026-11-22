@@ -1,4 +1,5 @@
-FROM ironsh/iron-proxy:0.56.0@sha256:727da0cc35a6d73ed2913a38d56c4b9b4476c075149492e4fbf75552e83361ff
+ARG VERSION=0.59.0
+FROM ironsh/iron-proxy:${VERSION}
 
 USER root
 RUN addgroup -g 10003 user \

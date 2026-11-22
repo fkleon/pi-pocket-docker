@@ -122,6 +122,8 @@ services:
     build:
       context: ./docker
       dockerfile: gateway.Dockerfile
+      args:
+        VERSION: 0.59.0
     image: local/pi-pocket-gateway:latest
     command: ["-config", "/etc/iron-proxy.yaml"]
     configs:
